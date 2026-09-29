@@ -1,0 +1,9 @@
+[10-Jun-2026 16:00:07 UTC] PHP Notice:  Undefined index: columns in /home/vquk3ihpk9sz/public_html/smartmrp.co/greenlink/scripts/ssp.customized.class.php on line 166
+[10-Jun-2026 16:00:07 UTC] PHP Warning:  count(): Parameter must be an array or an object that implements Countable in /home/vquk3ihpk9sz/public_html/smartmrp.co/greenlink/scripts/ssp.customized.class.php on line 166
+[10-Jun-2026 16:00:07 UTC] PHP Notice:  Undefined index: draw in /home/vquk3ihpk9sz/public_html/smartmrp.co/greenlink/scripts/ssp.customized.class.php on line 281
+[10-Jun-2026 16:03:28 UTC] PHP Notice:  Undefined index: columns in /home/vquk3ihpk9sz/public_html/smartmrp.co/greenlink/scripts/ssp.customized.class.php on line 166
+[10-Jun-2026 16:03:28 UTC] PHP Warning:  count(): Parameter must be an array or an object that implements Countable in /home/vquk3ihpk9sz/public_html/smartmrp.co/greenlink/scripts/ssp.customized.class.php on line 166
+[10-Jun-2026 16:03:28 UTC] PHP Notice:  Undefined index: draw in /home/vquk3ihpk9sz/public_html/smartmrp.co/greenlink/scripts/ssp.customized.class.php on line 281
+[10-Jun-2026 16:09:23 UTC] PHP Notice:  Undefined index: columns in /home/vquk3ihpk9sz/public_html/smartmrp.co/greenlink/scripts/ssp.customized.class.php on line 166
+[10-Jun-2026 16:09:23 UTC] PHP Warning:  count(): Parameter must be an array or an object that implements Countable in /home/vquk3ihpk9sz/public_html/smartmrp.co/greenlink/scripts/ssp.customized.class.php on line 166
+[10-Jun-2026 16:09:23 UTC] PHP Notice:  Undefined index: draw in /home/vquk3ihpk9sz/public_html/smartmrp.co/greenlink/scripts/ssp.customized.class.php on line 281
