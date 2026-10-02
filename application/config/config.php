@@ -24,8 +24,9 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 |
 */
 
-$config['base_url'] = 'https://smartmrp.co/greenlink/';
+// $config['base_url'] = 'https://smartmrp.co/greenlink/';
 
+$config['base_url'] ='https://localhost/greenlink/';
 /*
 |--------------------------------------------------------------------------
 | Index File
@@ -531,3 +532,9 @@ $config['rewrite_short_tags'] = FALSE;
 | Array:		array('10.0.1.200', '192.168.5.0/24')
 */
 $config['proxy_ips'] = '';
+
+
+
+
+// update--Allow quantity corrections for all approved GRNs with edit permission.
+$config['existing_stock_edit_enabled'] = TRUE;

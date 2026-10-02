@@ -12,7 +12,7 @@ class Goodreceive extends CI_Controller
         $this->load->model('Commeninfo');
         $this->load->model('Locationinfo');
     }
-    
+
     public function index()
     {
         $result['menuaccess'] = $this->Commeninfo->Getmenuprivilege();
@@ -23,12 +23,12 @@ class Goodreceive extends CI_Controller
         $result['materials'] = $this->Goodreceiveinfo->GetMaterials();
         $result['locations'] = $this->Locationinfo->Getlocations();
         $result['next_grn_number'] = $this->Goodreceiveinfo->GetNextGrnNumber();
-        
+
         $result['addcheck'] = isset($result['menuaccess']['add']) ? $result['menuaccess']['add'] : 0;
         $result['editcheck'] = isset($result['menuaccess']['edit']) ? $result['menuaccess']['edit'] : 0;
         $result['statuscheck'] = isset($result['menuaccess']['status']) ? $result['menuaccess']['status'] : 0;
         $result['deletecheck'] = isset($result['menuaccess']['delete']) ? $result['menuaccess']['delete'] : 0;
-        
+
         $this->load->view('goodreceive', $result);
     }
 
@@ -45,7 +45,7 @@ class Goodreceive extends CI_Controller
             'contact_no' => $result ? $result->telephone_no : ''
         ));
     }
-    
+
     public function GetGrnNumber()
     {
         if ($this->input->is_ajax_request()) {
@@ -172,4 +172,85 @@ class Goodreceive extends CI_Controller
             'zones'  => $zones
         ]);
     }
+
+	private function ExistingStockJson($data, $statusCode = 200)
+{
+    $this->output
+        ->set_status_header($statusCode)
+        ->set_content_type('application/json')
+        ->set_output(json_encode($data));
+}
+
+public function GetExistingStockAdjustmentData()
+{
+    if (!$this->Goodreceiveinfo->HasGrnPermission()) {
+        $this->ExistingStockJson(
+            array('status' => 0, 'message' => 'Access denied.'),
+            403
+        );
+        return;
+    }
+
+    $grnId = (int) $this->input->post('grn_id');
+    $grn = $this->Goodreceiveinfo->GetGrnForEdit($grnId);
+
+	//update -- Continue only if the GRN exists, is approved, and its status is 1 or 2. Otherwise stop and show an error.
+    if (!$grn || $grn['approval_status'] !== 'approved'
+        || !in_array((int) $grn['status'], array(1, 2), true)) {
+        $this->ExistingStockJson(
+            array(
+                'status' => 0,
+                'message' => 'Approved stock GRN not found.'
+            ),
+            404
+        );
+        return;
+    }
+
+    $this->ExistingStockJson(array(
+        'status' => 1,
+        'grn' => $grn,
+        'editable' =>
+            $this->Goodreceiveinfo->CanEditExistingStock($grn),
+        'history' =>
+            $this->Goodreceiveinfo->GetExistingStockHistory($grnId)
+    ));
+}
+
+public function UpdateExistingStockQuantities()
+{
+    if ($this->input->method(true) !== 'POST') {
+        $this->ExistingStockJson(
+            array('status' => 0, 'message' => 'POST required.'),
+            405
+        );
+        return;
+    }
+
+    if (!$this->Goodreceiveinfo->HasGrnPermission('edit')) {
+        $this->ExistingStockJson(
+            array(
+                'status' => 0,
+                'message' => 'Edit permission required.'
+            ),
+            403
+        );
+        return;
+    }
+
+    $items = json_decode(
+        (string) $this->input->post('items'),
+        true
+    );
+
+    $reason = trim((string) $this->input->post('reason'));
+
+    $this->ExistingStockJson(
+        $this->Goodreceiveinfo->UpdateExistingStockQuantities(
+            (int) $this->input->post('grn_id'),
+            $items,
+            $reason
+        )
+    );
+}
 }

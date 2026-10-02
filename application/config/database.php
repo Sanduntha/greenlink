@@ -76,7 +76,7 @@ $query_builder = TRUE;
 $db['default'] = array(
 	'dsn'	=> '',
 	'hostname' => 'localhost',
-	'username' => 'user_greenlink',
+	'username' => 'root',
 	'password' => '',
 	'database' => 'erav_greenlink',
 	'dbdriver' => 'mysqli',
@@ -94,3 +94,6 @@ $db['default'] = array(
 	'failover' => array(),
 	'save_queries' => TRUE
 );
+
+
+

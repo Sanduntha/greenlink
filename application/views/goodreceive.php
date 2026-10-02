@@ -430,29 +430,313 @@ include "include/topnavbar.php";
 </div>
 
 <!-- View GRN Modal -->
-<div class="modal fade" id="viewGrnModal" tabindex="-1" role="dialog" aria-labelledby="viewGrnModalLabel"
-    aria-hidden="true">
-    <div class="modal-dialog modal-xl" role="document">
+<div class="modal fade" id="existingStockModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="viewGrnModalLabel">GRN Details</h5>
-                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
-                    <span aria-hidden="true">&times;</span>
+                <h5 class="modal-title">
+                    Approved Stock — <span id="existingStockGrnNo"></span>
+                </h5>
+                <button type="button" class="close" data-dismiss="modal">
+                    <span>&times;</span>
                 </button>
             </div>
-            <div class="modal-body" id="viewGrnContent">
+
+            <div class="modal-body">
+                <p class="text-muted">
+                    Quantities represent the accepted receipt.
+                    Inventory will change only by the quantity difference.
+                </p>
+
+                <div class="table-responsive">
+                    <table class="table table-bordered table-sm">
+                        <thead>
+                            <tr>
+                                <th>Item</th>
+                                <th>Batch</th>
+                                <th>Previous quantity</th>
+                                <th>Corrected quantity</th>
+                                <th>Adjustment</th>
+                            </tr>
+                        </thead>
+                        <tbody id="existingStockRows"></tbody>
+                    </table>
+                </div>
+
+                <div id="existingStockReasonSection" class="form-group">
+                    <label for="existingStockReason">Reason</label>
+                    <input type="text"
+                        id="existingStockReason"
+                        class="form-control"
+                        maxlength="255"
+                        value="Approved stock correction">
+                </div>
+
+                <h6 class="mt-3">Adjustment History</h6>
+
+                <div class="table-responsive">
+                    <table class="table table-bordered table-sm">
+                        <thead>
+                            <tr>
+                                <th>Date/time</th>
+                                <th>Item</th>
+                                <th>Previous</th>
+                                <th>New</th>
+                                <th>Adjustment</th>
+                                <th>Action</th>
+                                <th>User</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="existingStockHistory"></tbody>
+                    </table>
+                </div>
             </div>
+
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary btn-sm" data-dismiss="modal">Close</button>
+                <button type="button"
+                    class="btn btn-secondary"
+                    data-dismiss="modal">
+                    Close
+                </button>
+                <button type="button"
+                    id="saveExistingStock"
+                    class="btn btn-primary">
+                    Save quantities
+                </button>
             </div>
         </div>
     </div>
 </div>
+<!-- GRN details popup -->
+<div class="modal fade" id="viewGrnModal" tabindex="-1"
+    aria-labelledby="viewGrnModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="viewGrnModalLabel">
+                    GRN Details
+                </h5>
+                <button type="button" class="close"
+                    data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
 
+            <div class="modal-body" id="viewGrnContent"></div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary btn-sm"
+                    data-dismiss="modal">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 <?php include "include/footerscripts.php"; ?>
 
 <script>
     $(document).ready(function () {
+		function existingStockError(xhr) {
+    const message = xhr.responseJSON && xhr.responseJSON.message;
+    showNotification(
+        message || 'Could not complete the request.',
+        'danger'
+    );
+}
+
+function signedQuantity(value) {
+    const number = Number(value);
+    return (number > 0 ? '+' : '') + number.toFixed(2);
+}
+
+function loadExistingStock(grnId, requestEditing) {
+    $.ajax({
+        url: '<?php echo base_url(); ?>Goodreceive/GetExistingStockAdjustmentData',
+        type: 'POST',
+        dataType: 'json',
+        data: { grn_id: grnId }
+    }).done(function (response) {
+        if (response.status != 1) {
+            showNotification(response.message, 'danger');
+            return;
+        }
+
+        selectedExistingStockId = grnId;
+        existingStockEditable =
+            requestEditing && response.editable === true;
+
+        $('#existingStockGrnNo').text(response.grn.grn_no);
+
+        $('#existingStockReason')
+            .val('Approved stock correction');
+
+        $('#existingStockReasonSection')
+            .toggle(existingStockEditable);
+
+        $('#saveExistingStock')
+            .toggle(existingStockEditable)
+            .prop('disabled', false);
+
+        const rows = $('#existingStockRows').empty();
+
+        response.grn.details.forEach(function (item) {
+            const previous = String(item.accepted_qty);
+
+            const row = $('<tr>')
+                .data('detail-id', item.idtbl_grndetail)
+                .data('old-qty', previous);
+
+            row.append(
+                $('<td>').text(item.material_name),
+                $('<td>').text(item.batch_number || ''),
+                $('<td>').text(Number(previous).toFixed(2))
+            );
+
+            const input = $('<input>', {
+                type: 'number',
+                class: 'form-control form-control-sm existing-stock-qty',
+                min: '0',
+                step: '0.01',
+                required: true
+            }).val(previous).prop('disabled', !existingStockEditable);
+
+            row.append(
+                $('<td>').append(input),
+                $('<td>', {
+                    class: 'existing-stock-difference',
+                    text: '0.00'
+                })
+            );
+
+            rows.append(row);
+        });
+
+        const history = $('#existingStockHistory').empty();
+
+        if (!response.history.length) {
+            history.append(
+                $('<tr>').append(
+                    $('<td>', {
+                        colspan: 8,
+                        text: 'No manual adjustments recorded.'
+                    })
+                )
+            );
+        }
+
+        response.history.forEach(function (entry) {
+            const row = $('<tr>');
+
+            [
+                entry.created_at,
+                entry.material_name,
+                entry.old_qty,
+                entry.new_qty,
+                signedQuantity(entry.adjustment_qty),
+                entry.action,
+                entry.user_name || entry.user_id,
+                entry.reason
+            ].forEach(function (value) {
+                row.append($('<td>').text(value));
+            });
+
+            history.append(row);
+        });
+
+        $('#existingStockModal').modal('show');
+    }).fail(existingStockError);
+}
+
+$(document).on(
+    'click',
+    '.btn-existing-stock-edit, .btn-existing-stock-history',
+    function () {
+        loadExistingStock(
+            Number($(this).data('id')),
+            $(this).hasClass('btn-existing-stock-edit')
+        );
+    }
+);
+
+$(document).on(
+    'input',
+    '#existingStockRows .existing-stock-qty',
+    function () {
+        const row = $(this).closest('tr');
+        const difference =
+            Number($(this).val()) - Number(row.data('old-qty'));
+
+        row.find('.existing-stock-difference').text(
+            Number.isFinite(difference)
+                ? signedQuantity(difference)
+                : ''
+        );
+    }
+);
+
+$('#saveExistingStock').on('click', function () {
+    if (!existingStockEditable) {
+        return;
+    }
+
+    const items = [];
+    let valid = true;
+
+    $('#existingStockRows tr').each(function () {
+        const row = $(this);
+        const input = row.find('.existing-stock-qty')[0];
+
+        if (!input.checkValidity()) {
+            input.reportValidity();
+            valid = false;
+            return false;
+        }
+
+        items.push({
+            detail_id: String(row.data('detail-id')),
+            old_qty: String(row.data('old-qty')),
+            qty: input.value
+        });
+    });
+
+    if (!valid) {
+        return;
+    }
+
+    const reason = $('#existingStockReason').val().trim();
+
+    if (!reason) {
+        showNotification('Enter an adjustment reason.', 'danger');
+        return;
+    }
+
+    const button = $(this).prop('disabled', true);
+
+    $.ajax({
+        url: '<?php echo base_url(); ?>Goodreceive/UpdateExistingStockQuantities',
+        type: 'POST',
+        dataType: 'json',
+        data: {
+            grn_id: selectedExistingStockId,
+            items: JSON.stringify(items),
+            reason: reason
+        }
+    }).done(function (response) {
+        showNotification(
+            response.message,
+            response.status == 1 ? 'success' : 'danger'
+        );
+
+        if (response.status == 1) {
+            grnDataTable.ajax.reload(null, false);
+            loadExistingStock(selectedExistingStockId, true);
+        }
+    }).fail(existingStockError).always(function () {
+        button.prop('disabled', !existingStockEditable);
+    });
+});
         var addcheck = '<?php echo $addcheck; ?>';
         var editcheck = '<?php echo $editcheck; ?>';
         var statuscheck = '<?php echo $statuscheck; ?>';
@@ -462,6 +746,15 @@ include "include/topnavbar.php";
         let poItems = [];
         let currentGrnId = null;
         let isEditMode = false;
+
+		const existingStockEnabled = <?php
+    echo json_encode(
+        $this->config->item('existing_stock_edit_enabled') === true
+    );
+?>;
+
+let selectedExistingStockId = 0;
+let existingStockEditable = false;
 
         // Initialize DataTable
         let grnDataTable = $('#grnDataTable').DataTable({
@@ -492,7 +785,22 @@ include "include/topnavbar.php";
                 { targets: 5, data: 'grntype', render: function (data) { return data === 'company' ? '<span class="badge badge-info">Company</span>' : '<span class="badge badge-primary">Individual</span>'; } },
                 { targets: 6, data: 'grn_source', render: function (data) { return data === 'po' ? '<span class="badge badge-success">PO</span>' : '<span class="badge badge-warning">No PO</span>'; } },
                 { targets: 7, data: 'batch_number' },
-                { targets: 8, data: 'approval_status', render: function (data) { return data === 'approved' ? '<span class="badge badge-success">Approved</span>' : '<span class="badge badge-warning">Pending</span>'; } },
+				// This code controls how the approval status column is displayed in the GRN table.
+                {
+                    targets: 8,
+                    data: 'approval_status',
+                    render: function (data, type, full) {
+                        if (type !== 'display') return data;
+                        if (data !== 'approved') return '<span class="badge badge-warning">Pending</span>';
+
+                        var actionsId = 'grn-actions-' + Number(full.idtbl_grn);
+                        return '<button type="button" class="btn btn-success btn-sm" ' +
+                            'data-toggle="collapse" data-target="#' + actionsId + '" ' +
+                            'aria-expanded="false" aria-controls="' + actionsId + '" ' +
+                            'title="Show stock actions">Approved ' +
+                            '<i class="fas fa-chevron-down ml-1" aria-hidden="true"></i></button>';
+                    }
+                },
                 {
                     targets: 9,
                     data: null,
@@ -500,11 +808,24 @@ include "include/topnavbar.php";
                     searchable: false,
                     className: 'text-center',
                     render: function (data, type, full) {
+                        if (type !== 'display') return '';
                         var button = '';
                         button += '<button class="btn btn-primary btn-sm mr-1 btn-view" data-id="' + full.idtbl_grn + '" title="View"><i class="fas fa-eye"></i></button>';
                         if (full.approval_status === 'approved') {
-                            return button;
+                            if (existingStockEnabled && editcheck == 1) {
+                                button += '<button type="button" class="btn btn-primary btn-sm mr-1 ' +
+                                    'btn-existing-stock-edit" data-id="' + full.idtbl_grn +
+                                    '" title="Edit quantities"><i class="fas fa-pen"></i></button>';
+                            }
+							// Show Edit Quantity button when editing is allowed, and always show the Adjustment History button for approved GRNs.
+                            button += '<button type="button" class="btn btn-info btn-sm ' +
+                                'btn-existing-stock-history" data-id="' + full.idtbl_grn +
+                                '" title="Adjustment history"><i class="fas fa-history"></i></button>';
+
+                            return '<div class="collapse" id="grn-actions-' + Number(full.idtbl_grn) +
+                                '" role="group" aria-label="Approved stock actions">' + button + '</div>';
                         }
+
                         if (typeof editcheck !== 'undefined' && editcheck == 1) {
                             button += '<button class="btn btn-primary btn-sm mr-1 btn-edit" data-id="' + full.idtbl_grn + '" title="Edit"><i class="fas fa-pen"></i></button>';
                         }
@@ -1542,8 +1863,8 @@ include "include/topnavbar.php";
             </div>
             <div class="alert alert-danger mb-0 py-2 text-center">
                 <i class="fas fa-ban mr-1"></i>
-                Incoming quantity <strong>${parseFloat(incomingQty).toFixed(2)} kg</strong> 
-                exceeds available space of <strong>${parseFloat(available).toFixed(2)} kg</strong>. 
+                Incoming quantity <strong>${parseFloat(incomingQty).toFixed(2)} kg</strong>
+                exceeds available space of <strong>${parseFloat(available).toFixed(2)} kg</strong>.
                 Please reduce quantities or select a different zone.
                 <br>
                 <button type="button" class="btn btn-sm btn-outline-danger mt-2" onclick="$('#capacity_block_modal').remove();">
@@ -1683,7 +2004,7 @@ include "include/topnavbar.php";
             }
 
             let alertHtml = `
-            <div class="alert ${alertClass} alert-dismissible fade show position-fixed" 
+            <div class="alert ${alertClass} alert-dismissible fade show position-fixed"
                  style="top: 20px; right: 20px; z-index: 9999; min-width: 300px;">
                 ${message}
                 <button type="button" class="close" data-dismiss="alert">

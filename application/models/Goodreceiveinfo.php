@@ -44,7 +44,7 @@ class Goodreceiveinfo extends CI_Model
         $this->db->order_by('fullname', 'asc');
 
         return $this->db->get()->result_array();
-        
+
     }
     public function GetSuppliers()
     {
@@ -283,7 +283,7 @@ class Goodreceiveinfo extends CI_Model
 
     public function GetGrnForEdit($grn_id)
     {
-        $this->db->select('g.*, 
+        $this->db->select('g.*,
                           e.fullname as supervisor_name,
                           s.name as supplier_name,
                           sl.location as site_name,
@@ -315,6 +315,9 @@ class Goodreceiveinfo extends CI_Model
     public function UpdateGrn($grn_id)
     {
         $this->db->trans_begin();
+		if (!$this->RequirePendingGrn($grn_id, 'edit')) {
+    return;
+}
 
         $userID = $_SESSION['userid'];
         $current_datetime = date('Y-m-d H:i:s');
@@ -477,6 +480,9 @@ class Goodreceiveinfo extends CI_Model
     public function DeleteGrn($grn_id)
     {
         $this->db->trans_begin();
+		if (!$this->RequirePendingGrn($grn_id, 'remove')) {
+    return;
+}
 
         $this->db->select('document_path');
         $this->db->from('tbl_grn');
@@ -517,6 +523,9 @@ class Goodreceiveinfo extends CI_Model
     public function ApproveGrn($grn_id)
     {
         $this->db->trans_begin();
+		if (!$this->RequirePendingGrn($grn_id, 'statuschange')) {
+    return;
+}
 
         $userID = $_SESSION['userid'];
         $current_datetime = date('Y-m-d H:i:s');
@@ -617,7 +626,7 @@ class Goodreceiveinfo extends CI_Model
 
     private function checkPoCompletion($po_id)
     {
-        $this->db->select('COUNT(*) as total, 
+        $this->db->select('COUNT(*) as total,
                           SUM(CASE WHEN qty <= received_qty THEN 1 ELSE 0 END) as completed');
         $this->db->from('tbl_porder_detail');
         $this->db->where('tbl_porder_idtbl_porder', $po_id);
@@ -682,4 +691,504 @@ class Goodreceiveinfo extends CI_Model
             'has_capacity' => $available > 0
         );
     }
+
+
+// Check whether the logged-in user has permission to access or edit GRN.
+	public function HasGrnPermission($permission = 'access_status')
+{
+    if (!$this->session->userdata('loggedin')
+        || !$this->session->userdata('userid')
+        || !in_array(
+            $permission,
+            array('access_status', 'edit', 'statuschange', 'remove'),
+            true
+        )) {
+        return false;
+    }
+// Check the user's permission from the database.
+    return $this->db->where(array(
+        'tbl_user_idtbl_user' =>
+            (int) $this->session->userdata('userid'),
+        'tbl_menu_list_idtbl_menu_list' => 14,
+        'status' => 1,
+        'access_status' => 1,
+        $permission => 1
+    ))->count_all_results('tbl_user_privilege') > 0;
+}
+//update-- Allow existing-stock editing only when the feature is enabled, the GRN exists, the GRN is approved, its status is 1 or 2, and the user has edit permission.
+public function CanEditExistingStock($grn)
+{
+    return $grn
+        && $this->config->item('existing_stock_edit_enabled') === true
+        && $grn['approval_status'] === 'approved'
+        && in_array((int) $grn['status'], array(1, 2), true)
+        && $this->HasGrnPermission('edit');
+}
+// Get previous stock changes made for this GRN.
+public function GetExistingStockHistory($grnId)
+{
+    return $this->db
+        ->select('l.*, u.name AS user_name, m.material_name')
+        ->from('tbl_stock_adjustment_log l')
+        ->join('tbl_user u', 'u.idtbl_user = l.user_id', 'left')
+        ->join(
+            'tbl_row_material m',
+            'm.idtbl_row_material = l.material_id',
+            'left'
+        )
+        ->where('l.grn_id', (int) $grnId)
+        ->order_by('l.id', 'DESC')
+        ->get()->result_array();
+}
+
+// Calculate quantity differences using integer hundredths.
+private function ExistingStockUnits($value)
+{
+    if (!is_scalar($value)
+        || !preg_match(
+            '/^([0-9]{1,12})(?:\.([0-9]+))?$/D',
+            (string) $value,
+            $match
+        )) {
+        throw new RuntimeException(
+            'Enter a valid non-negative quantity.'
+        );
+    }
+
+    $fraction = isset($match[2]) ? rtrim($match[2], '0') : '';
+
+    if (strlen($fraction) > 2) {
+        throw new RuntimeException(
+            'Quantities must use at most two decimal places.'
+        );
+    }
+
+    return ((int) $match[1] * 100)
+        + (int) str_pad($fraction, 2, '0', STR_PAD_RIGHT);
+}
+
+// Convert quantity into integer value to make calculations safely.// Example: 10.25 becomes 1025.
+// Convert integer quantity back to normal decimal format.
+private function ExistingStockDecimal($units)
+{
+    $absolute = abs($units);
+
+    return ($units < 0 ? '-' : '')
+        . intdiv($absolute, 100) . '.'
+        . str_pad((string) ($absolute % 100), 2, '0', STR_PAD_LEFT);
+}
+
+private function ExistingStockQuery($sql, $bindings = array())
+{
+    $query = $this->db->query($sql, $bindings);
+
+    if ($query === false) {
+        throw new RuntimeException(
+            'Database operation failed. Please try again.'
+        );
+    }
+
+    return $query;
+}
+
+private function ExistingStockUpdate($table, $key, $id, $values)
+{
+    if (!$this->db->where($key, $id)->update($table, $values)) {
+        throw new RuntimeException(
+            'Database update failed. Please try again.'
+        );
+    }
+}
+
+public function UpdateExistingStockQuantities($grnId, $items, $reason)
+{
+    if (!is_array($items) || !$items
+        || strlen($reason) > 255 || $reason === '') {
+        return array(
+            'status' => 0,
+            'message' => 'Provide items and a reason of at most 255 characters.'
+        );
+    }
+
+    $oldDebug = $this->db->db_debug;
+    $this->db->db_debug = false;
+
+    try {
+        if (!$this->db->trans_begin()) {
+            throw new RuntimeException(
+                'Could not start the stock update.'
+            );
+        }
+
+        $grn = $this->ExistingStockQuery(
+            'SELECT * FROM tbl_grn
+             WHERE idtbl_grn = ? FOR UPDATE',
+            array($grnId)
+        )->row_array();
+
+        if (!$this->CanEditExistingStock($grn)) {
+            throw new RuntimeException(
+                'This approved GRN cannot be edited.'
+            );
+        }
+		// If this GRN came from a PO, make sure the linked PO exists. If it does,
+		// load all details of that PO and lock them while the current operation is running
+		// does not check a specific GRN ID ; it uses the PO number stored inside the current $grn.
+
+        $poDetails = array();
+        if ($grn['grn_source'] === 'po') {
+            if (empty($grn['ponumber']) || !$this->ExistingStockQuery(
+                'SELECT idtbl_porder FROM tbl_porder
+                 WHERE idtbl_porder = ? FOR UPDATE',
+                array($grn['ponumber'])
+            )->row_array()) {
+                throw new RuntimeException('The linked purchase order is missing.');
+            }
+
+            $poDetails = $this->ExistingStockQuery(
+                'SELECT * FROM tbl_porder_detail
+                 WHERE tbl_porder_idtbl_porder = ?
+                 ORDER BY idtbl_porder_detail FOR UPDATE',
+                array($grn['ponumber'])
+            )->result_array();
+        }
+
+        $details = $this->ExistingStockQuery(
+            'SELECT * FROM tbl_grndetail
+             WHERE tbl_grn_idtbl_grn = ?
+             ORDER BY idtbl_grndetail FOR UPDATE',
+            array($grnId)
+        )->result_array();
+
+        $submitted = array();
+
+        foreach ($items as $item) {
+            if (!is_array($item)
+                || !isset(
+                    $item['detail_id'],
+                    $item['old_qty'],
+                    $item['qty']
+                )
+                || !ctype_digit((string) $item['detail_id'])
+                || (int) $item['detail_id'] < 1) {
+                throw new RuntimeException('Invalid item data.');
+            }
+
+            $id = (int) $item['detail_id'];
+
+            if (isset($submitted[$id])) {
+                throw new RuntimeException('Duplicate item submitted.');
+            }
+
+            $submitted[$id] = $item;
+        }
+
+        if (count($submitted) !== count($details)) {
+            throw new RuntimeException(
+                'The item list changed. Reload the GRN.'
+            );
+        }
+
+        $now = date('Y-m-d H:i:s');
+        $userId = (int) $this->session->userdata('userid');
+        $changes = 0;
+
+        foreach ($details as $detail) {
+            $detailId = (int) $detail['idtbl_grndetail'];
+
+            if (!isset($submitted[$detailId])) {
+                throw new RuntimeException(
+                    'An item does not belong to this GRN.'
+                );
+            }
+
+            $old = $this->ExistingStockUnits($detail['accepted_qty']);
+            $expected = $this->ExistingStockUnits(
+                $submitted[$detailId]['old_qty']
+            );
+            $new = $this->ExistingStockUnits(
+                $submitted[$detailId]['qty']
+            );
+
+            if ($old !== $expected) {
+                throw new RuntimeException(
+                    'Another user changed this GRN. Reload before saving.'
+                );
+            }
+
+            $delta = $new - $old;
+
+            if ($delta === 0) {
+                continue;
+            }
+
+            $stockKey = array(
+                $detail['tbl_row_material_idtbl_row_material'],
+                $detail['warehouse_location_name'],
+                $grn['site_location']
+            );
+
+            $stocks = $this->ExistingStockQuery(
+                'SELECT * FROM tbl_stock
+                 WHERE tbl_row_material_idtbl_row_material = ?
+                   AND warehouse_location_name = ?
+                   AND site_location = ?
+                 FOR UPDATE',
+                $stockKey
+            )->result_array();
+
+            $batchKey = $stockKey;
+            $batchKey[] = $detail['batch_number'];
+
+            $batches = $this->ExistingStockQuery(
+                'SELECT * FROM tbl_batchstock
+                 WHERE tbl_row_material_idtbl_row_material = ?
+                   AND warehouse_location_name = ?
+                   AND site_location = ?
+                   AND batchnumber = ?
+                 FOR UPDATE',
+                $batchKey
+            )->result_array();
+
+            if (count($stocks) !== 1 || count($batches) !== 1) {
+                throw new RuntimeException(
+                    'Stock or batch record is missing or ambiguous. Check the stock data.'
+                );
+            }
+
+            $stock = $stocks[0];
+            $batch = $batches[0];
+
+            $before = $this->ExistingStockUnits($stock['qty']);
+            $after = $before + $delta;
+
+            $batchQty =
+                $this->ExistingStockUnits($batch['qty']) + $delta;
+
+            $batchBalance =
+                $this->ExistingStockUnits($batch['balanceqty']) + $delta;
+
+            if ($after < 0 || $batchQty < 0 || $batchBalance < 0) {
+                throw new RuntimeException(
+                    'This reduction exceeds the available stock or batch balance.'
+                );
+            }
+
+            $quantity = $this->ExistingStockDecimal($new);
+// Updates GRN item quantities, validates purchase order limits, adjusts PO received quantities,
+//  and keeps stock receipt data consistent during corrections.
+            $detailValues = array(
+                'accepted_qty' => $quantity,
+                'total' => round(
+                    ($new / 100) * (float) $detail['unitprice'],
+                    2
+                ),
+                'updatedatetime' => $now
+            );
+
+            if ($grn['grn_source'] === 'po') {
+                $matches = array();
+                foreach ($poDetails as $index => $poDetail) {
+                    if ((int) $poDetail['tbl_row_material_idtbl_row_material']
+                        === (int) $detail['tbl_row_material_idtbl_row_material']) {
+                        $matches[] = $index;
+                    }
+                }
+
+                if (count($matches) !== 1) {
+                    throw new RuntimeException(
+                        'Purchase order item is missing or ambiguous.'
+                    );
+                }
+
+                $index = $matches[0];
+                $poReceived = $this->ExistingStockUnits(
+                    $poDetails[$index]['received_qty'] ?? '0'
+                ) + $delta;
+
+                if ($poReceived < 0
+                    || $poReceived > $this->ExistingStockUnits($poDetails[$index]['qty'])) {
+                    throw new RuntimeException(
+                        'The correction exceeds the purchase order quantity or received balance.'
+                    );
+                }
+
+                $poDetails[$index]['received_qty'] = $this->ExistingStockDecimal($poReceived);
+                $this->ExistingStockUpdate(
+                    'tbl_porder_detail',
+                    'idtbl_porder_detail',
+                    $poDetails[$index]['idtbl_porder_detail'],
+                    array('received_qty' => $poDetails[$index]['received_qty'])
+                );
+
+                // Preserve ordered and rejected quantities on PO receipts.
+                $detailValues['received_qty'] = $this->ExistingStockDecimal(
+                    $new + $this->ExistingStockUnits($detail['rejected_qty'])
+                );
+            } else {
+                $detailValues['qty'] = $quantity;
+                $detailValues['po_qty'] = $quantity;
+                $detailValues['received_qty'] = $quantity;
+                $detailValues['rejected_qty'] = 0;
+            }
+
+            $this->ExistingStockUpdate(
+                'tbl_grndetail',
+                'idtbl_grndetail',
+                $detailId,
+                $detailValues
+            );
+
+            $this->ExistingStockUpdate(
+                'tbl_stock',
+                'idtbl_stock',
+                $stock['idtbl_stock'],
+                array(
+                    'qty' => $this->ExistingStockDecimal($after),
+                    'status' => $after > 0 ? 1 : 0,
+                    'updatedatetime' => $now
+                )
+            );
+
+            $this->ExistingStockUpdate(
+                'tbl_batchstock',
+                'idtbl_batchstock',
+                $batch['idtbl_batchstock'],
+                array(
+                    'qty' => $this->ExistingStockDecimal($batchQty),
+                    'balanceqty' =>
+                        $this->ExistingStockDecimal($batchBalance),
+                    'status' => $batchBalance > 0 ? 1 : 0,
+                    'updatedatetime' => $now
+                )
+            );
+
+            if (!$this->db->insert(
+                'tbl_stock_adjustment_log',
+                array(
+                    'grn_id' => $grnId,
+                    'grn_detail_id' => $detailId,
+                    'material_id' =>
+                        $detail['tbl_row_material_idtbl_row_material'],
+                    'site_location' => $grn['site_location'],
+                    'warehouse' => $detail['warehouse_location_name'],
+                    'batch_number' => $detail['batch_number'],
+                    'old_qty' => $this->ExistingStockDecimal($old),
+                    'new_qty' => $quantity,
+                    'adjustment_qty' =>
+                        $this->ExistingStockDecimal($delta),
+                    'stock_before' =>
+                        $this->ExistingStockDecimal($before),
+                    'stock_after' =>
+                        $this->ExistingStockDecimal($after),
+                    'action' => $delta > 0
+                        ? 'Manually Added' : 'Manually Reduced',
+                    'reason' => $reason,
+                    'user_id' => $userId,
+                    'created_at' => $now
+                )
+            )) {
+                throw new RuntimeException(
+                    'Could not save the adjustment log.'
+                );
+            }
+
+            $changes++;
+        }
+
+		// Checks whether all purchase order items are fully received,
+		// then updates the PO completed status to complete or incomplete.
+
+        if ($changes > 0) {
+            if ($grn['grn_source'] === 'po') {
+                $completed = count($poDetails) > 0;
+                foreach ($poDetails as $poDetail) {
+                    if ($this->ExistingStockUnits($poDetail['received_qty'] ?? '0')
+                        < $this->ExistingStockUnits($poDetail['qty'])) {
+                        $completed = false;
+                        break;
+                    }
+                }
+                $this->ExistingStockUpdate(
+                    'tbl_porder',
+                    'idtbl_porder',
+                    $grn['ponumber'],
+                    array('completedstatus' => $completed ? 1 : 0)
+                );
+            }
+
+            $total = $this->ExistingStockQuery(
+                'SELECT COALESCE(SUM(total), 0) AS total
+                 FROM tbl_grndetail
+                 WHERE tbl_grn_idtbl_grn = ?',
+                array($grnId)
+            )->row()->total;
+
+            $this->ExistingStockUpdate(
+                'tbl_grn',
+                'idtbl_grn',
+                $grnId,
+                array(
+                    'total' => $total,
+                    'updatedatetime' => $now
+                )
+            );
+        }
+
+        if (!$this->db->trans_status()
+            || !$this->db->trans_commit()) {
+            throw new RuntimeException(
+                'Could not complete the stock update.'
+            );
+        }
+
+        return array(
+            'status' => 1,
+            'message' => $changes
+                ? 'Quantities, stock and adjustment history updated.'
+                : 'No quantity changes.'
+        );
+    } catch (Exception $exception) {
+        $this->db->trans_rollback();
+
+        return array(
+            'status' => 0,
+            'message' => $exception->getMessage()
+        );
+    } finally {
+        $this->db->db_debug = $oldDebug;
+    }
+}
+
+private function RequirePendingGrn($grnId, $permission)
+{
+    $query = $this->db->query(
+        'SELECT approval_status FROM tbl_grn
+         WHERE idtbl_grn = ? FOR UPDATE',
+        array($grnId)
+    );
+
+    $grn = $query ? $query->row_array() : null;
+
+    if (!$grn || $grn['approval_status'] !== 'pending'
+        || !$this->HasGrnPermission($permission)) {
+        $this->db->trans_rollback();
+
+        echo json_encode(array(
+            'status' => 0,
+            'type' => 'danger',
+            'message' =>
+                'This operation is allowed only for a pending GRN with the required permission.'
+        ));
+
+        return false;
+    }
+
+    return true;
+}
+
+
+
+
+
 }
